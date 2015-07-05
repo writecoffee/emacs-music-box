@@ -1,3 +1,22 @@
+;;; helm-netease-music.el --- Listen to NetEase music in Emacs.
+;; Copyright 2013 Silao Xu
+;;
+;; Author: Silao Xu <writecoffee@gmail.com>
+;; Maintainer: Silao Xu <writecoffee@gmail.com>
+;; URL: https://github.com/writecoffee/emacs-music-box
+;; Created: July 4th  2015
+;; Version: 0.1.1
+;; Package-Requires: ((helm "0.0.0") (multi "2.0.0"))
+
+;;; Commentary:
+;;
+;; A search & play interface for NetEase FREE Music.
+;; Fully inspired by helm-spotify created by Kris Jenkins <krisajenkins@gmail.com>
+;;
+;; Currently supports OSX
+
+;;; Code:
+
 (require 'json)
 (require 'helm)
 (require 'multi)
@@ -25,21 +44,17 @@
                                            "-")))
     replaced-plus))
 
-(defconst MACRO-SONG-QUERY "${QUERY_WORDS}")
-(defconst MACRO-SONG-ID "${SONG_ID}")
-
 (defconst CMD-CURL-SEARCH-SONGS (concat "curl -s "
                                         "--Cookie 'appver=2.0.2' "
                                         "--Referer 'http://music.163.com' "
                                         "-X POST "
                                         "\""
                                         "http://music.163.com/api/search/get/?"
-                                        "limit=2"
+                                        "limit=20"
                                         "&type=1"
                                         "&sub=false"
                                         "&offset=0"
-                                        "&s="
-                                        MACRO-SONG-QUERY
+                                        "&s=%s"
                                         "\""))
 
 (defconst CMD-CURL-GET-SONG-DETAIL (concat "curl -s "
@@ -48,9 +63,9 @@
                                            "\""
                                            "http://music.163.com/api/song/detail/?"
                                            "id="
-                                           MACRO-SONG-ID
-                                           "8&ids=%5B"
-                                           MACRO-SONG-ID
+                                           "%s"
+                                           "&ids=%5B"
+                                           "%s"
                                            "%5D"
                                            "\""))
 
@@ -59,21 +74,38 @@
 (defun cmd-get-song-detail (id)
   (json-read-from-string 
    (shell-command-to-string
-    (replace-regexp-in-string MACRO-SONG-ID
-                              id
-                              CMD-CURL-GET-SONG-DETAIL))))
+    (concat "curl -s "
+            "--Cookie 'appver=2.0.2' "
+            "--Referer 'http://music.163.com' "
+            "\""
+            "http://music.163.com/api/song/detail/?"
+            "id="
+            id
+            "8&ids=%5B"
+            id
+            "%5D"
+            "\""))))
 
 (defun cmd-search-songs (search-query)
-  (let ((formatted-query-words (url-hexify-string search-query)))
+  (let ((formatted-query-words (url-encode-url search-query)))
     (json-read-from-string
      (shell-command-to-string
-      (replace-regexp-in-string MACRO-SONG-QUERY
-                                formatted-query-words
-                                CMD-CURL-SEARCH-SONGS)))))
+      (format CMD-CURL-SEARCH-SONGS formatted-query-words)))))
 
 (defun helm-netease-music-search ()
   (let* ((lambda-format-for-display (lambda (song)
-                                      (cdr (assoc 'name song))))
+                                      (let ((name (cdr (assoc 'name song)))
+                                            (album-name (cdr (assoc 'name (cdr (assoc 'album song)))))
+                                            (artist-names (mapcar (lambda (artist)
+                                                                    (cdr (assoc 'name artist)))
+                                                                  (cdr (assoc 'artists song))))
+                                            (track-length (cdr (assoc 'duration song))))
+                                        (format "%s (%d min %0.2d sec)\n%s - %s"
+                                                name
+                                                (/ track-length 60000) (/ (mod track-length 60000) 1000)
+                                                (mapconcat 'identity artist-names "/")
+                                                album-name))))
+
          (json-response (cmd-search-songs helm-pattern))
          (song-list (cdr (assoc 'songs (assoc 'result json-response))))
          (result-list
@@ -83,6 +115,10 @@
                   song-list)))
     result-list))
 
+(setq kill-buffer-query-functions
+  (remq 'process-kill-buffer-query-function
+         kill-buffer-query-functions))
+
 (defun helm-netease-music-play-song (song-url)
   (let ((lambda-get-song-download-url
           (lambda ()
@@ -90,11 +126,18 @@
               (cdr (assoc 'mp3Url
                           (elt (cdr (assoc 'songs song-detail))
                                0)))))))
+    (set-buffer-modified-p nil)
+    (when (get-buffer MUSIC-PLAYER-BUFFER-NAME)
+      (kill-buffer MUSIC-PLAYER-BUFFER-NAME))
+    (async-shell-command (concat "mpg123 " (funcall lambda-get-song-download-url))
+                         MUSIC-PLAYER-BUFFER-NAME)
+    (delete-windows-on MUSIC-PLAYER-BUFFER-NAME)))
 
-    (async-shell-command
-     (concat "mpg123 "
-             (funcall lambda-get-song-download-url))
-     MUSIC-PLAYER-BUFFER-NAME)))
+(defun helm-netease-actions (actions track)
+  "Return a list of helm ACTIONS available for this TRACK."
+  `((,(format "Play Track - %s" (alist-get '(name) track))       . spotify-play-track)
+    (,(format "Play Album - %s" (alist-get '(album name) track)) . spotify-play-album)
+    ("Show Track Metadata" . pp)))
 
 (defvar helm-sources-netease-music
   '((name . "NetEase Music")
@@ -114,4 +157,5 @@
           :buffer "*helm-netease-music*")
     (setq helm-input-idle-delay back-helm-input-idle-delay)))
 
-(helm-netease-music)
+(provide 'helm-netease-music)
+;;; helm-netease-music.el ends here
